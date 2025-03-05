@@ -2,7 +2,6 @@ import os
 import copy
 import scipy.io
 import numpy as np
-import matplotlib.pyplot as plt
 from PIL import Image
 import torch
 import torch.nn as nn
@@ -10,6 +9,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 from torchvision import models
+import matplotlib.pyplot as plt
 
 #region Загрузка аннотаций и мета-данных из .mat файлов
 
@@ -76,7 +76,7 @@ img_path = os.path.join(image_folder, train_images[0])
 if os.path.exists(img_path):
     print(f"Файл найден: {img_path}")
 else:
-    print(f"Файл НЕ найден! Проверь путь: {img_path}")
+    print(f"Файл не найден. Проверьте путь: {img_path}")
 
 # Загружаем и отображаем изображение с bounding box
 image = Image.open(img_path)
@@ -84,7 +84,6 @@ x1, y1, x2, y2 = train_bboxes[0]
 plt.figure(figsize=(8, 6))
 plt.imshow(image)
 plt.gca().add_patch(plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor="red", linewidth=2))
-# Обратите внимание: для отображения названия класса используем словарь с индексом (train_labels[0]+1)
 plt.title(f"Класс: {class_dict[train_labels[0] + 1]}")
 plt.axis("off")
 plt.show()
@@ -122,12 +121,35 @@ transform = transforms.Compose([
 
 # Финальная проверка диапазона меток
 print(f"Исправленные классы: min={min(train_labels)}, max={max(train_labels)}")
-assert min(train_labels) >= 0, " Ошибка: есть отрицательные метки!"
-assert max(train_labels) <= 194, " Ошибка: метка выходит за пределы (194)!"
+assert min(train_labels) >= 0, " Ошибка: есть отрицательные метки"
+assert max(train_labels) <= 194, " Ошибка: метка выходит за пределы (194)"
 
 train_dataset = CarsDataset(train_images, train_labels, transform=transform)
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 print("Всего изображений в тренировочном датасете:", len(train_dataset))
+
+#endregion
+
+#region Создание валидационного набора
+
+from sklearn.model_selection import train_test_split
+
+# Разделяем данные на train (80%) и val (20%)
+train_images, val_images, train_labels, val_labels = train_test_split(
+    train_images, train_labels, test_size=0.2, random_state=42, stratify=train_labels
+)
+
+# Создаем датасеты
+train_dataset = CarsDataset(train_images, train_labels, transform=transform)
+val_dataset = CarsDataset(val_images, val_labels, transform=transform)
+
+# Создаем DataLoader'ы
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)  # Валидацию не мешаем
+
+# Проверяем количество изображений
+print(f"Всего изображений в train: {len(train_dataset)}")
+print(f"Всего изображений в val: {len(val_dataset)}")
 
 #endregion
 
@@ -183,45 +205,131 @@ adasmooth_optimizer = AdaSmooth(model_adasmooth.parameters(), lr=0.0001)
 #endregion
 
 #region Определение функций обучения и оценки
-def train_model(model, optimizer, num_epochs, device, data_loader, criterion):
-    model.train()
+
+def train_model(model, optimizer, num_epochs, device, train_loader, val_loader, criterion):
+    best_val_acc = 0
+    patience = 2
+    no_improve_epochs = 0
+
+    train_losses, val_losses = [], []
+    train_accuracies, val_accuracies = [], []
+
     for epoch in range(num_epochs):
+        # Обучение
+        model.train()
         running_loss = 0.0
-        for images, labels in data_loader:
+        correct_train, total_train = 0, 0
+
+        for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
+
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-            running_loss += loss.item()
-        print(f"Эпоха [{epoch+1}/{num_epochs}], Потери: {running_loss/len(data_loader):.4f}")
 
-def evaluate_model(model, device, data_loader):
+            running_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            total_train += labels.size(0)
+            correct_train += (predicted == labels).sum().item()
+
+        train_acc = 100 * correct_train / total_train
+        avg_train_loss = running_loss / len(train_loader)
+
+        # Валидация
+        avg_val_loss, val_acc = evaluate_model(model, device, val_loader, criterion)
+
+        train_losses.append(avg_train_loss)
+        val_losses.append(avg_val_loss)
+        train_accuracies.append(train_acc)
+        val_accuracies.append(val_acc)
+
+        print(f"Эпоха [{epoch+1}/{num_epochs}] | Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
+              f"Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+
+        # Ранняя остановка
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            no_improve_epochs = 0  # Сброс счетчика
+        else:
+            no_improve_epochs += 1
+            if no_improve_epochs >= patience:
+                print("Ранняя остановка: валидация не улучшается.")
+                break  # Прерываем обучение
+
+    print("Обучение завершено")
+    return train_losses, val_losses, train_accuracies, val_accuracies
+
+
+
+# Оценка модели
+def evaluate_model(model, device, val_loader, criterion):
     model.eval()
     correct, total = 0, 0
+    running_loss = 0.0
     with torch.no_grad():
-        for images, labels in data_loader:
+        for images, labels in val_loader:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item()
             _, predicted = torch.max(outputs, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
-    return 100 * correct / total
+
+    avg_loss = running_loss / len(val_loader)
+    accuracy = 100 * correct / total
+    return avg_loss, accuracy
 
 criterion = nn.CrossEntropyLoss()
 
-# Обучение и оценка моделей
-num_epochs = 5
+#endregion
+
+#region Обучение и оценка моделей
+
+num_epochs = 20
 
 print("Обучение модели с Adam:")
-train_model(model_adam, optimizer_adam, num_epochs, device, train_loader, criterion)
-accuracy_adam = evaluate_model(model_adam, device, train_loader)
-print(f"Точность модели с Adam: {accuracy_adam:.2f}%")
+train_losses_adam, val_losses_adam, train_accs_adam, val_accs_adam = train_model(
+    model_adam, optimizer_adam, num_epochs, device, train_loader, val_loader, criterion
+)
+_, accuracy_adam = evaluate_model(model_adam, device, val_loader, criterion) # Берем только accuracy
+print(f"Валидационная точность модели с Adam: {accuracy_adam:.2f}%")
 
 print("\nОбучение модели с AdaSmooth:")
-train_model(model_adasmooth, adasmooth_optimizer, num_epochs, device, train_loader, criterion)
-accuracy_adasmooth = evaluate_model(model_adasmooth, device, train_loader)
-print(f"Точность модели с AdaSmooth: {accuracy_adasmooth:.2f}%")
+train_losses_adasmooth, val_losses_adasmooth, train_accs_adasmooth, val_accs_adasmooth = train_model(
+    model_adasmooth, adasmooth_optimizer, num_epochs, device, train_loader, val_loader, criterion
+)
+_, accuracy_adasmooth = evaluate_model(model_adasmooth, device, val_loader, criterion) # Берем только accuracy
+print(f"Валидационная точность модели с AdaSmooth: {accuracy_adasmooth:.2f}%")
+
+#endregion
+
+#region Графики
+
+# График потерь
+plt.figure(figsize=(12, 5))
+plt.plot(range(1, len(train_losses_adam) + 1), train_losses_adam, label="Train Loss (Adam)", marker="o")
+plt.plot(range(1, len(val_losses_adam) + 1), val_losses_adam, label="Val Loss (Adam)", marker="o")
+plt.plot(range(1, len(train_losses_adasmooth) + 1), train_losses_adasmooth, label="Train Loss (AdaSmooth)", marker="s")
+plt.plot(range(1, len(val_losses_adasmooth) + 1), val_losses_adasmooth, label="Val Loss (AdaSmooth)", marker="s")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()
+plt.title("Loss per Epoch")
+plt.show()
+
+# График точности
+plt.figure(figsize=(12, 5))
+plt.plot(range(1, len(train_accs_adam) + 1), train_accs_adam, label="Train Acc (Adam)", marker="o")
+plt.plot(range(1, len(val_accs_adam) + 1), val_accs_adam, label="Val Acc (Adam)", marker="o")
+plt.plot(range(1, len(train_accs_adasmooth) + 1), train_accs_adasmooth, label="Train Acc (AdaSmooth)", marker="s")
+plt.plot(range(1, len(val_accs_adasmooth) + 1), val_accs_adasmooth, label="Val Acc (AdaSmooth)", marker="s")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy (%)")
+plt.legend()
+plt.title("Validation Accuracy per Epoch")
+plt.show()
 
 #endregion
