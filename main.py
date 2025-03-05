@@ -143,7 +143,7 @@ train_images, val_images, train_labels, val_labels = train_test_split(
 train_dataset = CarsDataset(train_images, train_labels, transform=transform)
 val_dataset = CarsDataset(val_images, val_labels, transform=transform)
 
-# Создаем DataLoader'ы
+# Создаем DataLoader
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)  # Валидацию не мешаем
 
@@ -294,15 +294,25 @@ print("Обучение модели с Adam:")
 train_losses_adam, val_losses_adam, train_accs_adam, val_accs_adam = train_model(
     model_adam, optimizer_adam, num_epochs, device, train_loader, val_loader, criterion
 )
-_, accuracy_adam = evaluate_model(model_adam, device, val_loader, criterion) # Берем только accuracy
-print(f"Валидационная точность модели с Adam: {accuracy_adam:.2f}%")
+
+# Оцениваем точность модели на TRAIN и VALIDATION наборах
+accuracy_adam_train = evaluate_model(model_adam, device, train_loader, criterion)[1]  # Train Accuracy
+accuracy_adam_val = evaluate_model(model_adam, device, val_loader, criterion)[1]  # Validation Accuracy
+
+print(f"Точность модели с Adam на тренировочном наборе: {accuracy_adam_train:.2f}%")
+print(f"Валидационная точность модели с Adam: {accuracy_adam_val:.2f}%")
 
 print("\nОбучение модели с AdaSmooth:")
 train_losses_adasmooth, val_losses_adasmooth, train_accs_adasmooth, val_accs_adasmooth = train_model(
     model_adasmooth, adasmooth_optimizer, num_epochs, device, train_loader, val_loader, criterion
 )
-_, accuracy_adasmooth = evaluate_model(model_adasmooth, device, val_loader, criterion) # Берем только accuracy
-print(f"Валидационная точность модели с AdaSmooth: {accuracy_adasmooth:.2f}%")
+
+# Оцениваем точность модели на TRAIN и VALIDATION наборах
+accuracy_adasmooth_train = evaluate_model(model_adasmooth, device, train_loader, criterion)[1]  # Train Accuracy
+accuracy_adasmooth_val = evaluate_model(model_adasmooth, device, val_loader, criterion)[1]  # Validation Accuracy
+
+print(f"Точность модели с AdaSmooth на тренировочном наборе: {accuracy_adasmooth_train:.2f}%")
+print(f"Валидационная точность модели с AdaSmooth: {accuracy_adasmooth_val:.2f}%")
 
 #endregion
 
