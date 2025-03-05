@@ -114,6 +114,9 @@ class CarsDataset(Dataset):
 #region Трансформации и создание DataLoader
 
 transform = transforms.Compose([
+    transforms.RandomRotation(15),  # Вращение на ±15 градусов
+    transforms.RandomHorizontalFlip(),  # Горизонтальное отражение
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # Изменение цвета
     transforms.Resize((227, 227)),
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
@@ -169,7 +172,7 @@ model_adam = models.alexnet(pretrained=False)
 model_adam.classifier[6] = nn.Linear(4096, len(class_dict))
 model_adam.load_state_dict(initial_state)
 model_adam.to(device)
-optimizer_adam = optim.Adam(model_adam.parameters(), lr=0.0001)
+optimizer_adam = optim.Adam(model_adam.parameters(), lr=0.00005, weight_decay=1e-4)
 
 # Модель для AdaSmooth
 model_adasmooth = models.alexnet(pretrained=False)
